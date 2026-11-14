@@ -1,0 +1,153 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', 'Sarabun', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #F8FAFC;
+    color: #0F172A;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .font-mono,
+  .tabular-nums {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* รูปแบบสำหรับการสั่งพิมพ์ใบรายการนำส่งพัสดุ (Printable Manifest A4) */
+@media print {
+  @page {
+    margin: 6mm 6mm 6mm 6mm;
+  }
+
+  /* 1. พื้นหลังหน้ากระดาษและเอกสารภายนอกเป็นสีขาว */
+  html, body {
+    background-color: #FFFFFF !important;
+    background: #FFFFFF !important;
+    color: #000000 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .no-print,
+  .print-container {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  .modal-print-wrapper,
+  .print-preview-scroll-area {
+    position: static !important;
+    inset: auto !important;
+    background: #FFFFFF !important;
+    background-color: #FFFFFF !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    width: 100% !important;
+  }
+
+  .manifest-a4-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    background-color: #FFFFFF !important;
+    background: #FFFFFF !important;
+  }
+
+  /* 2. ตารางรายการพัสดุ */
+  table {
+    width: 100% !important;
+    max-width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+    box-sizing: border-box !important;
+    background-color: #FFFFFF !important;
+    background: #FFFFFF !important;
+    border: 1px solid #000000 !important;
+  }
+
+  /* 3. ใส่สีหัวตาราง */
+  thead {
+    display: table-header-group !important;
+  }
+  thead tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    border-top: 2px solid #000000 !important;
+    border-bottom: 2px solid #000000 !important;
+    background-color: #F1F5F9 !important;
+    background: #F1F5F9 !important;
+  }
+  thead th {
+    background-color: #F1F5F9 !important;
+    background: #F1F5F9 !important;
+    color: #000000 !important;
+    border: 1px solid #334155 !important;
+    border-top: 2px solid #000000 !important;
+    border-bottom: 2px solid #000000 !important;
+    font-weight: 700 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* 4. เนื้อหาตาราง และสีไฮไลท์สถานะแถว */
+  tbody {
+    display: table-row-group !important;
+    background-color: #FFFFFF !important;
+    background: #FFFFFF !important;
+  }
+  tbody tr {
+    display: table-row !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+  /* แถวปกติพื้นหลังสีขาว */
+  tbody tr:not(.print-highlight-legal):not(.print-highlight-infirmary),
+  tbody tr:not(.print-highlight-legal):not(.print-highlight-infirmary) td {
+    background-color: #FFFFFF !important;
+    background: #FFFFFF !important;
+    color: #000000 !important;
+    border: 1px solid #64748B !important;
+  }
+  /* สีไฮไลท์สถานะแถว: ติดนิติการ */
+  tbody tr.print-highlight-legal,
+  tbody tr.print-highlight-legal td {
+    background-color: #FEF1F0 !important;
+    background: #FEF1F0 !important;
+    color: #000000 !important;
+    border: 1px solid #64748B !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+  /* สีไฮไลท์สถานะแถว: ติดต่องานพยาบาล */
+  tbody tr.print-highlight-infirmary,
+  tbody tr.print-highlight-infirmary td {
+    background-color: #FFFBEB !important;
+    background: #FFFBEB !important;
+    color: #000000 !important;
+    border: 1px solid #64748B !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* 5. ใส่สีตะกร้าหอพัก */
+  .dorm-basket-badge,
+  .dorm-basket-badge * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+}

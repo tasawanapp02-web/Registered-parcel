@@ -1,0 +1,874 @@
+import React, { useState, useMemo, useCallback } from 'react';
+import {
+  Search,
+  CheckCircle2,
+  RotateCcw,
+  AlertOctagon,
+  Trash2,
+  X,
+  Database,
+  AlertTriangle,
+  Camera,
+  HeartHandshake,
+  Calendar,
+  CheckSquare,
+  Square,
+} from 'lucide-react';
+import { useParcelSystem } from '../context/ParcelSystemContext';
+import { BarcodeCameraScanner, decodeBarcodeFromImageFile } from './BarcodeCameraScanner';
+import { DeliveryDateModal } from './DeliveryDateModal';
+import {
+  Parcel,
+  PARCEL_STATUSES,
+  getDormitoryTheme,
+  getAvailableDormitories,
+  formatThaiSlashDate,
+  isUnknownOwnerParcel,
+  WEEKLY_PARCEL_WARNING_LIMIT,
+  formatStudentCode,
+  isRedHighlightTrackingNumber,
+} from '../types/parcel';
+
+export const TrackingView: React.FC = () => {
+  const {
+    students,
+    parcels,
+    searchParcelsLocal,
+    recordLocalSearchSaving,
+    updateParcelStatus,
+    bulkUpdateParcelStatus,
+    deleteParcel,
+    getStudentParcelCounts,
+    openWeeklyWarningPopup,
+    parcelRateLimitConfig,
+    quotaMetrics,
+    canCurrentMemberEdit,
+    canCurrentMemberDelete,
+  } = useParcelSystem();
+
+  const [searchInput, setSearchInput] = useState<string>('');
+  const [searchKeyword, setSearchKeyword] = useState<string>('');
+  const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
+  const [selectedDormitory, setSelectedDormitory] = useState<string>('ALL');
+  const [onlyOverLimit, setOnlyOverLimit] = useState<boolean>(false);
+
+  // สถานะกล้องสแกนค้นหาพัสดุด้วยกล้องหลังมือถือ
+  const [isScannerOpen, setIsScannerOpen] = useState<boolean>(false);
+  const [isScanningFile, setIsScanningFile] = useState<boolean>(false);
+
+  // สถานะ Modal สำหรับเลือกวันที่รับพัสดุเมื่อกดส่งมอบสำเร็จ
+  const [deliveryModalParcel, setDeliveryModalParcel] = useState<Parcel | null>(null);
+  const [isDeliveryModalOpen, setIsDeliveryModalOpen] = useState<boolean>(false);
+
+  // สถานะการเลือกพัสดุหลายรายการ (Multi-Select) เพื่อส่งมอบพร้อมกัน
+  const [selectedParcelIds, setSelectedParcelIds] = useState<string[]>([]);
+  const [isBatchDeliveryModalOpen, setIsBatchDeliveryModalOpen] = useState<boolean>(false);
+
+  const availableDormitories = useMemo(
+    () => getAvailableDormitories(students, parcels),
+    [students, parcels]
+  );
+
+  const handleExecuteSearch = useCallback(
+    (explicitKeyword?: string) => {
+      const target = explicitKeyword !== undefined ? explicitKeyword : searchInput;
+      const trimmed = target.trim();
+      setSearchKeyword(trimmed);
+      if (trimmed.length > 0) {
+        recordLocalSearchSaving();
+      }
+    },
+    [searchInput, recordLocalSearchSaving]
+  );
+
+  const handleScanDetected = useCallback(
+    (decoded: string) => {
+      const trimmed = decoded.trim();
+      if (trimmed) {
+        setSearchInput(trimmed);
+        handleExecuteSearch(trimmed);
+        setIsScannerOpen(false);
+      }
+    },
+    [handleExecuteSearch]
+  );
+
+  const handleScanFromFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsScanningFile(true);
+    try {
+      const decoded = await decodeBarcodeFromImageFile(file);
+      if (decoded.trim()) {
+        handleScanDetected(decoded.trim());
+      }
+    } catch {
+      // ignore if not found
+    } finally {
+      setIsScanningFile(false);
+      e.target.value = '';
+    }
+  };
+
+  const filteredParcels = useMemo(() => {
+    const trimmed = searchKeyword.trim();
+    if (!trimmed) return [];
+    const base = searchParcelsLocal(trimmed, selectedStatus, selectedDormitory);
+    if (!onlyOverLimit) return base;
+    return base.filter((p) => {
+      if (isUnknownOwnerParcel(p)) return false;
+      return getStudentParcelCounts(p.studentCode, p.studentFullName).isOverLimit;
+    });
+  }, [
+    searchParcelsLocal,
+    searchKeyword,
+    selectedStatus,
+    selectedDormitory,
+    onlyOverLimit,
+    getStudentParcelCounts,
+  ]);
+
+  const overLimitParcelCount = useMemo(() => {
+    return parcels.filter((p) => {
+      if (isUnknownOwnerParcel(p)) return false;
+      return getStudentParcelCounts(p.studentCode, p.studentFullName).isOverLimit;
+    }).length;
+  }, [parcels, getStudentParcelCounts]);
+
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = { ALL: parcels.length };
+    for (const s of PARCEL_STATUSES) counts[s] = 0;
+    for (const p of parcels) {
+      counts[p.status] = (counts[p.status] || 0) + 1;
+    }
+    return counts;
+  }, [parcels]);
+
+  // การจัดการเปิด Modal ส่งมอบสำเร็จ
+  const handleOpenDeliveryModal = (parcel: Parcel) => {
+    setDeliveryModalParcel(parcel);
+    setIsDeliveryModalOpen(true);
+  };
+
+  const handleConfirmDelivery = async (deliveredDate: string, note?: string) => {
+    if (!deliveryModalParcel) return;
+    await updateParcelStatus(
+      deliveryModalParcel.id,
+      'ส่งมอบสำเร็จ',
+      note !== undefined ? note : deliveryModalParcel.note,
+      deliveredDate
+    );
+  };
+
+  // การเลือกพัสดุหลายรายการ (Multi-Selection)
+  const handleToggleSelectParcel = (id: string) => {
+    setSelectedParcelIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedParcelIds.length === filteredParcels.length && filteredParcels.length > 0) {
+      setSelectedParcelIds([]);
+    } else {
+      setSelectedParcelIds(filteredParcels.map((p) => p.id));
+    }
+  };
+
+  const selectedParcelsList = useMemo(() => {
+    const set = new Set(selectedParcelIds);
+    return parcels.filter((p) => set.has(p.id));
+  }, [parcels, selectedParcelIds]);
+
+  const handleOpenBatchDeliveryModal = () => {
+    if (selectedParcelIds.length === 0) return;
+    setIsBatchDeliveryModalOpen(true);
+  };
+
+  const handleConfirmBatchDelivery = async (deliveredDate: string) => {
+    if (selectedParcelIds.length === 0) return;
+    await bulkUpdateParcelStatus(selectedParcelIds, 'ส่งมอบสำเร็จ', deliveredDate);
+    setSelectedParcelIds([]);
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200 pb-5">
+        <div>
+          <p className="text-xs font-medium text-slate-500">
+            ระบบค้นหาด้วยดัชนีในเครื่อง (In-Memory Local Search Index) · ประหยัดโควตา Read ไปแล้ว{' '}
+            <span className="font-mono font-bold text-slate-800 tabular-nums">
+              {quotaMetrics.localLookupsSaved}
+            </span>{' '}
+            ครั้ง
+          </p>
+          <h1 className="text-2xl md:text-3xl font-bold text-slate-900 mt-1">
+            ติดตามและค้นหาสถานะพัสดุ (Tracking & Search)
+          </h1>
+        </div>
+
+        <div className="flex items-center gap-2 text-xs text-slate-600 bg-white border border-slate-200 px-3.5 py-2.5 rounded-xl">
+          <Database className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>
+            ค้นหาได้ทันทีจากแคชในเครื่อง (<span className="font-mono font-bold">0</span> Firestore Reads/Keystroke)
+          </span>
+        </div>
+      </div>
+
+      {/* แถบค้นหาขนาดใหญ่ (Mobile-First) และตัวกรองหอพัก */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+          <div className="md:col-span-8 flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="relative flex-1">
+              <label htmlFor="tracking-search-input" className="sr-only">
+                ค้นหาเลขพัสดุ ชื่อนักเรียน หรือรหัสนักเรียน
+              </label>
+              <Search className="w-5 h-5 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
+              <input
+                id="tracking-search-input"
+                type="text"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleExecuteSearch();
+                  }
+                }}
+                placeholder="ค้นหาด้วย เลข Tracking, รหัสนักเรียน, ชื่อจริง หรือ ชื่อเล่น..."
+                className="w-full min-h-[52px] pl-12 pr-10 py-3 text-base text-slate-900 bg-slate-50 border-2 border-slate-300 rounded-xl focus:bg-white focus:border-slate-900 focus:outline-none transition-colors"
+              />
+              {searchInput && (
+                <button
+                  type="button"
+                  aria-label="ล้างคำค้นหา"
+                  onClick={() => {
+                    setSearchInput('');
+                    setSearchKeyword('');
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 min-h-[38px] min-w-[38px] flex items-center justify-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {/* ปุ่มค้นหา แทรกหน้าปุ่มสแกนค้นหา เพื่อลดการกระตุกและค้าง */}
+              <button
+                type="button"
+                onClick={() => handleExecuteSearch()}
+                className="flex-1 sm:flex-none min-h-[52px] px-5 py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 shrink-0 cursor-pointer transition-colors shadow-xs"
+              >
+                <Search className="w-4 h-4 shrink-0" />
+                <span>ค้นหา</span>
+              </button>
+
+              {/* ปุ่มสแกนค้นหา */}
+              <button
+                type="button"
+                onClick={() => setIsScannerOpen((prev) => !prev)}
+                className="flex-1 sm:flex-none min-h-[52px] px-4 py-3 bg-slate-900 hover:bg-slate-800 active:bg-slate-950 text-white text-xs sm:text-sm font-bold rounded-xl flex items-center justify-center gap-2 shrink-0 cursor-pointer transition-colors"
+              >
+                <Camera className="w-4 h-4 shrink-0" />
+                <span>{isScannerOpen ? 'ปิดกล้อง' : 'สแกนค้นหา'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="md:col-span-4">
+            <label htmlFor="dorm-filter-select" className="sr-only">
+              กรองตามหอพัก
+            </label>
+            <select
+              id="dorm-filter-select"
+              value={selectedDormitory}
+              onChange={(e) => setSelectedDormitory(e.target.value)}
+              className="w-full min-h-[52px] px-4 py-3 text-sm font-semibold text-slate-800 bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:border-slate-900 focus:outline-none"
+            >
+              <option value="ALL">ทุกหอพัก (ทั้งหมด)</option>
+              {availableDormitories.map((dormName) => (
+                <option key={dormName} value={dormName}>
+                  {dormName} ({getDormitoryTheme(dormName).basketCode})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <BarcodeCameraScanner
+          isOpen={isScannerOpen}
+          onClose={() => setIsScannerOpen(false)}
+          onDetected={handleScanDetected}
+          onScanFromFile={handleScanFromFile}
+          isScanningFile={isScanningFile}
+        />
+
+        {/* ปุ่มกรองตามสถานะพัสดุ */}
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => setSelectedStatus('ALL')}
+            className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+              selectedStatus === 'ALL'
+                ? 'bg-slate-900 text-white'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            ทั้งหมด ({statusCounts.ALL || 0})
+          </button>
+          {PARCEL_STATUSES.filter((st) => st !== 'รอการยืนยัน').map((st) => (
+            <button
+              key={st}
+              type="button"
+              onClick={() => setSelectedStatus(st)}
+              className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                selectedStatus === st
+                  ? st === 'ติดนิติการ'
+                    ? 'bg-red-600 text-white'
+                    : st === 'ติดต่องานพยาบาล'
+                    ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 font-bold shadow-xs'
+                    : st === 'พัสดุไม่ทราบเจ้าของ'
+                    ? 'bg-slate-600 text-white'
+                    : st === 'ลงทะเบียนรับพัสดุ' || st === 'ส่งมอบสำเร็จ'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-slate-900 text-white'
+                  : st === 'ติดต่องานพยาบาล'
+                  ? 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              {st === 'ติดนิติการ' ? 'พัสดุติดนิติการ' : st} ({statusCounts[st] || 0})
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setOnlyOverLimit((prev) => !prev)}
+            className={`min-h-[42px] px-3.5 py-2 rounded-xl text-xs font-bold transition-colors whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+              onlyOverLimit
+                ? 'bg-red-600 text-white'
+                : overLimitParcelCount > 0
+                ? 'bg-red-50 text-red-800 border border-red-300 hover:bg-red-100'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              สถานะเฝ้าระวัง (เกินอัตรากำหนด: {overLimitParcelCount})
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* แถบการเลือกหลายรายการพร้อมกัน (Batch Action Bar) */}
+      {canCurrentMemberEdit && selectedParcelIds.length > 0 && (
+        <div className="bg-emerald-50 border-2 border-emerald-400 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm animate-in fade-in duration-150">
+          <div className="flex items-center gap-3">
+            <span className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold text-sm">
+              {selectedParcelIds.length}
+            </span>
+            <div>
+              <p className="text-sm font-bold text-emerald-950">
+                เลือกพัสดุแล้ว {selectedParcelIds.length} รายการ
+              </p>
+              <p className="text-xs text-emerald-700">
+                สามารถกดส่งมอบสำเร็จและเลือกวันที่รับพร้อมกันได้ทันที
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleOpenBatchDeliveryModal}
+              className="min-h-[42px] px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors flex items-center gap-2 cursor-pointer shadow-xs"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              <span>ส่งมอบสำเร็จตามที่เลือก ({selectedParcelIds.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setSelectedParcelIds([])}
+              className="min-h-[42px] px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+            >
+              ล้างการเลือก
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* รายการผลลัพธ์การค้นหา */}
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500 px-1">
+          <div className="flex items-center gap-3">
+            {canCurrentMemberEdit && filteredParcels.length > 0 && (
+              <button
+                type="button"
+                onClick={handleToggleSelectAll}
+                className="flex items-center gap-1.5 font-semibold text-slate-700 hover:text-slate-900 cursor-pointer"
+              >
+                {selectedParcelIds.length === filteredParcels.length && filteredParcels.length > 0 ? (
+                  <CheckSquare className="w-4 h-4 text-emerald-600" />
+                ) : (
+                  <Square className="w-4 h-4 text-slate-400" />
+                )}
+                <span>
+                  {selectedParcelIds.length === filteredParcels.length && filteredParcels.length > 0
+                    ? 'ยกเลิกเลือกทั้งหมด'
+                    : 'เลือกทั้งหมดในหน้านี้'}
+                </span>
+              </button>
+            )}
+            <span>
+              {searchKeyword.trim() ? (
+                <>
+                  พบพัสดุตรงตามการค้นหา{' '}
+                  <strong className="font-mono text-slate-900 tabular-nums">{filteredParcels.length}</strong> รายการ
+                </>
+              ) : (
+                'กรุณาระบุคำค้นหาเพื่อแสดงรายการพัสดุ'
+              )}
+            </span>
+          </div>
+          <span>กดปุ่ม "ส่งมอบสำเร็จ" เพื่อเลือกวันที่รับพัสดุ (วันนี้, เมื่อวาน, หรือระบุวันที่)</span>
+        </div>
+
+        {!searchKeyword.trim() ? (
+          <div className="bg-white border border-slate-200 rounded-2xl p-10 md:p-14 text-center space-y-4">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shadow-2xs">
+              <Search className="w-8 h-8" />
+            </div>
+            <div className="space-y-1.5 max-w-md mx-auto">
+              <h3 className="text-base font-bold text-slate-900">
+                พิมพ์คำค้นหา หรือสแกนบาร์โค้ดเพื่อค้นหาพัสดุ
+              </h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                ระบบจะแสดงเฉพาะรายการพัสดุที่ตรงตามการค้นหาเท่านั้น สามารถค้นหาได้ด้วย:
+              </p>
+              <div className="pt-2 flex flex-wrap justify-center gap-1.5 text-xs">
+                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-mono font-semibold rounded-lg">
+                  เลขพัสดุ (หรือ 6 ตัวท้าย)
+                </span>
+                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-mono font-semibold rounded-lg">
+                  รหัสนักเรียน
+                </span>
+                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-semibold rounded-lg">
+                  ชื่อ-นามสกุล / ชื่อเล่น
+                </span>
+                <span className="px-2.5 py-1 bg-slate-100 text-slate-700 font-semibold rounded-lg">
+                  หอพัก
+                </span>
+              </div>
+            </div>
+          </div>
+        ) : filteredParcels.length === 0 ? (
+          <div className="bg-white border border-slate-200 rounded-2xl p-12 text-center space-y-3">
+            <p className="text-base font-bold text-slate-800">
+              ไม่พบรายการพัสดุที่ตรงกับคำค้นหา "{searchKeyword}"
+            </p>
+            <p className="text-xs text-slate-500">
+              ลองตรวจสอบเลขพัสดุ รหัสนักเรียน หรือเปลี่ยนคำค้นหา
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setSearchInput('');
+                setSearchKeyword('');
+                setSelectedStatus('ALL');
+                setSelectedDormitory('ALL');
+                setOnlyOverLimit(false);
+              }}
+              className="min-h-[44px] px-4 py-2 bg-slate-900 text-white text-xs font-semibold rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+            >
+              ล้างการค้นหา
+            </button>
+          </div>
+        ) : (
+          <div className="bg-white border border-slate-200 rounded-2xl divide-y divide-slate-200 overflow-hidden">
+            {filteredParcels.map((parcel) => {
+              const dormTheme = getDormitoryTheme(parcel.dormitory);
+              const isDelivered = parcel.status === 'ส่งมอบสำเร็จ';
+              const isLegalHold = parcel.status === 'ติดนิติการ';
+              const isInfirmary = parcel.status === 'ติดต่องานพยาบาล';
+              const studentStats = !isUnknownOwnerParcel(parcel)
+                ? getStudentParcelCounts(parcel.studentCode, parcel.studentFullName)
+                : null;
+              const isSelected = selectedParcelIds.includes(parcel.id);
+
+              return (
+                <div
+                  key={parcel.id}
+                  style={isLegalHold ? { backgroundColor: '#FEF1F0' } : isInfirmary ? { backgroundColor: '#FFFBEB' } : undefined}
+                  className={`p-4 md:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 transition-colors ${
+                    isSelected
+                      ? 'bg-emerald-50/60 ring-2 ring-emerald-400 inset-0'
+                      : isLegalHold
+                      ? 'bg-[#FEF1F0] hover:bg-[#FEF1F0]/90 border-l-4 border-l-red-500'
+                      : isInfirmary
+                      ? 'bg-amber-50/70 hover:bg-amber-100/70 border-l-4 border-l-amber-500'
+                      : studentStats?.isOverWeeklyLimit
+                      ? 'bg-red-50/40 hover:bg-red-50/70'
+                      : 'hover:bg-slate-50/70'
+                  }`}
+                >
+                  <div className="flex items-start gap-3 flex-1">
+                    {/* กล่องกาเลือกหลายรายการ */}
+                    {canCurrentMemberEdit && (
+                      <button
+                        type="button"
+                        onClick={() => handleToggleSelectParcel(parcel.id)}
+                        aria-label={`เลือกพัสดุ ${parcel.trackingNumber}`}
+                        className="mt-0.5 text-slate-400 hover:text-emerald-600 transition-colors cursor-pointer shrink-0"
+                      >
+                        {isSelected ? (
+                          <CheckSquare className="w-5 h-5 text-emerald-600" />
+                        ) : (
+                          <Square className="w-5 h-5 text-slate-300" />
+                        )}
+                      </button>
+                    )}
+
+                    <div className="space-y-1.5 flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                        <span
+                          className="w-3.5 h-3.5 rounded-sm shrink-0"
+                          style={{ backgroundColor: dormTheme.hexColor }}
+                        />
+                        <span
+                          style={isRedHighlightTrackingNumber(parcel.trackingNumber, parcel) ? { color: '#DC2626' } : undefined}
+                          className={`font-mono font-bold text-base tabular-nums ${
+                            isRedHighlightTrackingNumber(parcel.trackingNumber, parcel)
+                              ? 'text-red-600 font-extrabold'
+                              : 'text-slate-900'
+                          }`}
+                        >
+                          {parcel.trackingNumber}
+                        </span>
+                        <span className="text-slate-300">·</span>
+                        <span className="text-xs font-semibold text-slate-700">{parcel.courier}</span>
+                        <span className="text-slate-300">·</span>
+                        <span
+                          className={`text-xs font-bold ${
+                            isDelivered || parcel.status === 'ลงทะเบียนรับพัสดุ'
+                              ? 'text-emerald-700'
+                              : isLegalHold
+                              ? 'text-red-700'
+                              : isInfirmary
+                              ? 'text-amber-800 bg-amber-100/90 px-2 py-0.5 rounded border border-amber-300 font-extrabold'
+                              : parcel.status === 'พัสดุไม่ทราบเจ้าของ'
+                              ? 'text-slate-600'
+                              : 'text-blue-700'
+                          }`}
+                        >
+                          สถานะ: {parcel.status === 'ติดนิติการ' ? 'พัสดุติดนิติการ' : parcel.status}
+                        </span>
+                      </div>
+
+                      <div className="text-sm font-bold text-slate-900 truncate">
+                        {parcel.studentFullName}{' '}
+                        <span className="font-normal text-slate-600">({parcel.nickname})</span>
+                        <span className="mx-2 text-slate-300 font-normal">·</span>
+                        <span className="font-mono text-xs font-semibold text-slate-700 tabular-nums">
+                          รหัส {formatStudentCode(parcel.studentCode)}
+                        </span>
+                        <span className="mx-2 text-slate-300 font-normal">·</span>
+                        <span className="text-xs font-normal text-slate-600">ชั้น {parcel.gradeRoom}</span>
+                      </div>
+
+                      {/* ข้อมูลหอพัก, ห้องพัก, ประเภทสิ่งของ, วันเวลารับเข้า พร้อมเน้นข้อความด้วยสี */}
+                      <div className="flex flex-wrap items-center gap-2 text-xs pt-0.5">
+                        {/* 1. หอพัก (เช่น หอพักล้านนา 2) เน้นด้วยสีประจำหอพัก */}
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border shadow-2xs ${dormTheme.bgClass} ${dormTheme.borderClass} ${dormTheme.textClass}`}
+                          style={{ borderColor: dormTheme.hexColor }}
+                        >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: dormTheme.hexColor }}
+                          />
+                          <span>{parcel.dormitory || 'ไม่ระบุหอพัก'}</span>
+                          <span className="text-[11px] font-mono opacity-85">({dormTheme.basketCode})</span>
+                        </span>
+
+                        {/* ห้องพัก */}
+                        <span className="px-2 py-1 rounded-lg bg-slate-100 text-slate-800 border border-slate-200 font-mono text-xs shadow-2xs">
+                          ห้อง {parcel.dormRoom || '-'}
+                        </span>
+
+                        {/* 2. ประเภทสิ่งของ (เช่น ประเภท: เสื้อผ้า/เครื่องแต่งกาย (ผ้าขนหนู)) เน้นด้วยสีคราม Indigo หรือสีแดงกรณี -RD */}
+                        <span
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border shadow-2xs ${
+                            parcel.trackingNumber?.toUpperCase().endsWith('-RD') || parcel.category?.toUpperCase().endsWith('-RD')
+                              ? 'bg-red-50 text-red-700 border-red-300 font-bold'
+                              : 'bg-indigo-50 text-indigo-950 border-indigo-200'
+                          }`}
+                        >
+                          <span className="font-bold text-indigo-700">ประเภท:</span>
+                          <strong className="font-bold">{parcel.category}</strong>
+                        </span>
+
+                        {/* 3. วันที่และเวลารับเข้า (เช่น รับเข้า 2026-10-25 เวลา 14:00 น.) เน้นด้วยสีเขียวมรกต Emerald */}
+                        <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-mono border shadow-2xs bg-emerald-50 text-emerald-950 border-emerald-300">
+                          <span className="font-sans font-bold text-emerald-700">รับเข้า</span>
+                          <strong className="font-bold text-emerald-950">{parcel.receivedDate}</strong>
+                          <span className="font-sans font-medium text-emerald-700">เวลา</span>
+                          <strong className="font-bold text-emerald-950">
+                            {(() => {
+                              if (parcel.createdAt) {
+                                const d = new Date(parcel.createdAt);
+                                if (!isNaN(d.getTime())) {
+                                  const hh = String(d.getHours()).padStart(2, '0');
+                                  const mm = String(d.getMinutes()).padStart(2, '0');
+                                  return `${hh}:${mm}`;
+                                }
+                              }
+                              return `${String(parcel.receivedHour ?? 0).padStart(2, '0')}:00`;
+                            })()} น.
+                          </strong>
+                        </span>
+
+                        {parcel.status === 'ส่งมอบสำเร็จ' && (
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg font-mono font-bold text-sky-950 tabular-nums bg-sky-100/80 border border-sky-300 shadow-2xs">
+                            <span className="font-sans font-bold text-sky-700">วันที่รับพัสดุ:</span>
+                            <span className="font-extrabold text-sky-950">{formatThaiSlashDate(parcel.deliveredDate || parcel.receivedDate || parcel.updatedAt)}</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* 4. สถิติจำนวนพัสดุของนักเรียน: วัน 0 · สัปดาห์ 1 · เดือน 1 ชิ้น เน้นข้อความด้วยสีเฉพาะ */}
+                      {studentStats && (
+                        <div className="flex flex-wrap items-center gap-2 text-xs pt-1">
+                          <span className="font-sans font-semibold text-slate-600">
+                            จำนวนพัสดุของนักเรียน:
+                          </span>
+                          <div className="flex flex-wrap items-center gap-1.5 font-mono">
+                            {/* วัน เน้นสีแดงกรณีเกินเกณฑ์รายวัน */}
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border shadow-2xs ${
+                                studentStats.isOverDailyLimit
+                                  ? 'bg-red-50 text-red-950 border-red-300 ring-1 ring-red-300'
+                                  : 'bg-blue-50 text-blue-950 border-blue-200'
+                              }`}
+                            >
+                              <span className={`font-sans font-medium ${studentStats.isOverDailyLimit ? 'text-red-700 font-bold' : 'text-blue-700'}`}>
+                                วัน
+                              </span>
+                              <strong
+                                className={`text-xs tabular-nums ${
+                                  studentStats.isOverDailyLimit
+                                    ? 'font-black text-red-700'
+                                    : 'font-extrabold text-blue-950'
+                                }`}
+                              >
+                                {studentStats.dayCount}
+                              </strong>
+                            </span>
+                            <span className="text-slate-300">·</span>
+
+                            {/* สัปดาห์ เน้นสีแดงกรณีเกินเกณฑ์รายสัปดาห์ */}
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border shadow-2xs ${
+                                studentStats.isOverWeeklyLimit
+                                  ? 'bg-red-50 text-red-950 border-red-300 ring-1 ring-red-300'
+                                  : 'bg-purple-50 text-purple-950 border-purple-200'
+                              }`}
+                            >
+                              <span className={`font-sans font-medium ${studentStats.isOverWeeklyLimit ? 'text-red-700 font-bold' : 'text-purple-700'}`}>
+                                สัปดาห์
+                              </span>
+                              <strong
+                                className={`text-xs tabular-nums ${
+                                  studentStats.isOverWeeklyLimit
+                                    ? 'font-black text-red-700'
+                                    : 'font-extrabold text-purple-950'
+                                }`}
+                              >
+                                {studentStats.weekCount}
+                              </strong>
+                            </span>
+                            <span className="text-slate-300">·</span>
+
+                            {/* เดือน เน้นสีแดงกรณีเกินเกณฑ์รายเดือน */}
+                            <span
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border shadow-2xs ${
+                                studentStats.isOverMonthlyLimit
+                                  ? 'bg-red-50 text-red-950 border-red-300 ring-1 ring-red-300'
+                                  : 'bg-amber-50 text-amber-950 border-amber-200'
+                              }`}
+                            >
+                              <span className={`font-sans font-medium ${studentStats.isOverMonthlyLimit ? 'text-red-700 font-bold' : 'text-amber-800'}`}>
+                                เดือน
+                              </span>
+                              <strong
+                                className={`text-xs tabular-nums ${
+                                  studentStats.isOverMonthlyLimit
+                                    ? 'font-black text-red-700'
+                                    : 'font-extrabold text-amber-950'
+                                }`}
+                              >
+                                {studentStats.monthCount}
+                              </strong>
+                              <span className={`font-sans text-[11px] ${studentStats.isOverMonthlyLimit ? 'text-red-700 font-bold' : 'text-amber-800'}`}>
+                                ชิ้น
+                              </span>
+                            </span>
+                          </div>
+
+                          {studentStats.isOverLimit && (
+                            <button
+                              type="button"
+                              onClick={() => openWeeklyWarningPopup(studentStats, 'manual')}
+                              className="font-sans px-2.5 py-1 bg-red-600 hover:bg-red-700 active:scale-98 text-white text-[11px] font-bold rounded-lg flex items-center gap-1.5 cursor-pointer shadow-2xs transition-all"
+                            >
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              <span>
+                                สถานะเฝ้าระวัง{' '}
+                                {studentStats.isOverDailyLimit && `(วัน > ${parcelRateLimitConfig.daily.limit}) `}
+                                {studentStats.isOverWeeklyLimit && `(สัปดาห์ > ${parcelRateLimitConfig.weekly.limit}) `}
+                                {studentStats.isOverMonthlyLimit && `(เดือน > ${parcelRateLimitConfig.monthly.limit})`}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {parcel.note && parcel.note !== 'ส่งตรวจห้องนิติการ/ครูหอพักตามระเบียบ' && (
+                        <p className="text-xs text-slate-500 pt-0.5">หมายเหตุ: {parcel.note}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {!canCurrentMemberEdit && (
+                      <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-500 text-xs font-medium border border-slate-200">
+                        สิทธิ์ค้นหาเท่านั้น (ไม่อนุญาตให้แก้ไข)
+                      </span>
+                    )}
+
+                    {/* ปุ่มแก้ไขวันที่รับ สำหรับพัสดุที่ส่งมอบสำเร็จแล้ว */}
+                    {canCurrentMemberEdit && parcel.status === 'ส่งมอบสำเร็จ' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenDeliveryModal(parcel)}
+                          className="min-h-[44px] px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-2xs"
+                          title="แก้ไขวันที่รับพัสดุ"
+                        >
+                          <Calendar className="w-4 h-4 text-emerald-700" />
+                          <span>แก้ไขวันที่รับ</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => updateParcelStatus(parcel.id, 'ลงทะเบียนรับพัสดุ', undefined, '')}
+                          className="min-h-[44px] px-3.5 py-2 bg-red-50 hover:bg-red-600 text-red-700 hover:text-white border border-red-200 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                        >
+                          <RotateCcw className="w-4 h-4" />
+                          <span>ยกเลิกการรับพัสดุ</span>
+                        </button>
+                      </>
+                    )}
+
+                    {/* ปุ่มส่งมอบสำเร็จ: เปิด Modal เพื่อให้เลือกวันที่รับพัสดุ พร้อมปุ่มด่วน (วันนี้, เมื่อวาน, วันที่) */}
+                    {canCurrentMemberEdit && parcel.status !== 'ส่งมอบสำเร็จ' && (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDeliveryModal(parcel)}
+                        className="min-h-[44px] px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-semibold rounded-xl transition-all flex items-center gap-1.5 whitespace-nowrap cursor-pointer shadow-xs"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>ส่งมอบสำเร็จ</span>
+                      </button>
+                    )}
+
+                    {canCurrentMemberEdit && parcel.status !== 'ติดต่องานพยาบาล' && parcel.status !== 'ส่งมอบสำเร็จ' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateParcelStatus(
+                            parcel.id,
+                            'ติดต่องานพยาบาล'
+                          )
+                        }
+                        className="min-h-[44px] px-3 py-2 bg-amber-50 hover:bg-amber-500 text-amber-900 hover:text-slate-950 border border-amber-300 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                      >
+                        <HeartHandshake className="w-4 h-4" />
+                        <span>ติดต่องานพยาบาล</span>
+                      </button>
+                    )}
+
+                    {canCurrentMemberEdit && parcel.status === 'ติดต่องานพยาบาล' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateParcelStatus(
+                            parcel.id,
+                            'ลงทะเบียนรับพัสดุ'
+                          )
+                        }
+                        className="min-h-[44px] px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                      >
+                        <RotateCcw className="w-4 h-4" />
+                        <span>สู่รับพัสดุปกติ</span>
+                      </button>
+                    )}
+
+                    {canCurrentMemberEdit && parcel.status !== 'ติดนิติการ' && parcel.status !== 'ส่งมอบสำเร็จ' && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateParcelStatus(
+                            parcel.id,
+                            'ติดนิติการ'
+                          )
+                        }
+                        className="min-h-[44px] px-3 py-2 bg-red-50 hover:bg-red-700 text-red-800 hover:text-white border border-red-200 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                      >
+                        <AlertOctagon className="w-4 h-4" />
+                        <span>พัสดุติดนิติการ</span>
+                      </button>
+                    )}
+
+                    {canCurrentMemberDelete && (
+                      <button
+                        type="button"
+                        aria-label={`ลบพัสดุ ${parcel.trackingNumber}`}
+                        onClick={() => deleteParcel(parcel.id)}
+                        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl border border-slate-200 text-slate-400 hover:text-red-600 hover:border-red-200 transition-colors cursor-pointer"
+                        title="ลบพัสดุ"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Modal เลือกวันที่รับพัสดุ (กรณีรายชิ้น) */}
+      <DeliveryDateModal
+        isOpen={isDeliveryModalOpen}
+        onClose={() => {
+          setIsDeliveryModalOpen(false);
+          setDeliveryModalParcel(null);
+        }}
+        parcel={deliveryModalParcel}
+        onConfirm={handleConfirmDelivery}
+      />
+
+      {/* Modal เลือกวันที่รับพัสดุ (กรณีเลือกส่งมอบหลายรายการพร้อมกัน) */}
+      <DeliveryDateModal
+        isOpen={isBatchDeliveryModalOpen}
+        onClose={() => setIsBatchDeliveryModalOpen(false)}
+        parcel={null}
+        parcelsList={selectedParcelsList}
+        isBatch={true}
+        onConfirm={handleConfirmBatchDelivery}
+      />
+    </div>
+  );
+};
